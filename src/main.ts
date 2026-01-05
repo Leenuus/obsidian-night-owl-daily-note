@@ -1,15 +1,10 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, WorkspaceLeaf, normalizePath } from 'obsidian';
-// Obsidian exposes moment on the global window object
-declare global {
-    interface Window {
-        moment: any;
-    }
-}
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, normalizePath, moment } from 'obsidian';
 
+// Interface for Settings
 interface NightOwlSettings {
-    rolloverHour: number; // The hour the day "starts" (e.g., 4 for 4 AM)
-    folder: string;       // Folder where notes are stored
-    dateFormat: string;   // Moment.js format (e.g., YYYY-MM-DD)
+    rolloverHour: number; // e.g., 4 for 4 AM
+    folder: string;       // e.g., "Daily Notes"
+    dateFormat: string;   // e.g., "YYYY-MM-DD"
 }
 
 const DEFAULT_SETTINGS: NightOwlSettings = {
@@ -24,86 +19,128 @@ export default class NightOwlPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
-        // Command: Open "Today's" Note (Respecting Night Owl Logic)
+        // --- GROUP 1: Time-Based Commands (Night Owl Logic) ---
+        // These depend on the current system clock + rollover setting.
+
         this.addCommand({
-            id: 'open-night-owl-today',
-            name: 'Open Today\'s Daily note(NightOwl)',
-            callback: () => this.openNightOwlNote(0)
+            id: 'night-owl-jump-today',
+            name: 'Jump to: Today (Night Owl)',
+            callback: () => this.jumpToTimeBasedDate(0)
         });
 
-        // Command: Open Yesterday
         this.addCommand({
-            id: 'open-night-owl-prev',
-            name: 'Open Previous Daily note(NightOwl)',
-            callback: () => this.openNightOwlNote(-1)
+            id: 'night-owl-jump-yesterday',
+            name: 'Jump to: Yesterday (Night Owl)',
+            callback: () => this.jumpToTimeBasedDate(-1)
         });
 
-        // Command: Open Tomorrow
         this.addCommand({
-            id: 'open-night-owl-next',
-            name: 'Open Next Daily note(NightOwl)',
-            callback: () => this.openNightOwlNote(1)
+            id: 'night-owl-jump-tomorrow',
+            name: 'Jump to: Tomorrow (Night Owl)',
+            callback: () => this.jumpToTimeBasedDate(1)
         });
 
-        // Add Ribbon Icon for quick access to "Today"
-        this.addRibbonIcon('moon', 'Open Night Owl Daily Note', () => {
-            this.openNightOwlNote(0);
+        // --- GROUP 2: File-Based Commands (Walking) ---
+        // These depend on the date of the CURRENTLY OPEN file.
+
+        this.addCommand({
+            id: 'night-owl-nav-prev',
+            name: 'Navigate: Previous Daily Note',
+            callback: () => this.navigateRelativeDate(-1)
+        });
+
+        this.addCommand({
+            id: 'night-owl-nav-next',
+            name: 'Navigate: Next Daily Note',
+            callback: () => this.navigateRelativeDate(1)
+        });
+
+        // Ribbon Icon (Defaults to Today)
+        this.addRibbonIcon('moon', 'Open Today (Night Owl)', () => {
+            this.jumpToTimeBasedDate(0);
         });
 
         this.addSettingTab(new NightOwlSettingTab(this.app, this));
     }
 
     /**
-     * Core Logic: Calculates the "Night Owl Date"
-     * @param dayOffset Number of days to shift from "Today". 0 = Today, -1 = Yesterday, 1 = Tomorrow
+     * LOGIC 1: Absolute Time Calculation
+     * Returns a moment object representing "Today" adjusted for the rollover hour.
      */
-    getNightOwlDate(dayOffset: number = 0): any {
-        const now = window.moment();
-        
-        // If current hour is strictly less than rollover hour (e.g., 3 < 4),
-        // we exist in the "previous" day logically.
+    getNightOwlToday(): moment.Moment {
+        const now = moment();
+        // If it's 3 AM and rollover is 4 AM, we are still in "yesterday"
         if (now.hour() < this.settings.rolloverHour) {
             now.subtract(1, 'day');
         }
-
-        // Apply the navigation offset (Previous/Next)
-        if (dayOffset !== 0) {
-            now.add(dayOffset, 'days');
-        }
-
         return now;
     }
 
     /**
-     * Opens or creates the daily note based on the calculated date.
+     * Handler for Jump commands (Today/Yesterday/Tomorrow)
      */
-    async openNightOwlNote(dayOffset: number) {
-        const targetDate = this.getNightOwlDate(dayOffset);
+    async jumpToTimeBasedDate(dayOffset: number) {
+        const targetDate = this.getNightOwlToday().add(dayOffset, 'days');
+        await this.openOrCreateNote(targetDate);
+    }
+
+    /**
+     * LOGIC 2: Relative File Calculation
+     * Reads the current view, parses the filename, and moves back/forward.
+     */
+    async navigateRelativeDate(dayOffset: number) {
+        const activeFile = this.app.workspace.getActiveFile();
+
+        if (!activeFile) {
+            new Notice("No file is currently open.");
+            return;
+        }
+
+        // Try to parse the filename using the settings format
+        // The 'true' flag ensures strict parsing (rejects files that don't match the format)
+        const currentFileDate = moment(activeFile.basename, this.settings.dateFormat, true);
+
+        if (!currentFileDate.isValid()) {
+            new Notice(`Current file "${activeFile.basename}" is not a valid daily note.`);
+            return;
+        }
+
+        // Calculate target
+        const targetDate = currentFileDate.add(dayOffset, 'days');
+        await this.openOrCreateNote(targetDate);
+    }
+
+    /**
+     * Shared Logic: Finds, Creates, and Opens a note for a specific Moment date.
+     */
+    async openOrCreateNote(targetDate: moment.Moment) {
         const fileName = targetDate.format(this.settings.dateFormat);
         const folderPath = normalizePath(this.settings.folder);
         const filePath = normalizePath(`${folderPath}/${fileName}.md`);
 
         let file = this.app.vault.getAbstractFileByPath(filePath);
 
-        // 1. Create Folder if it doesn't exist
+        // 1. Create Folder if missing
         if (!(await this.app.vault.adapter.exists(folderPath))) {
             await this.app.vault.createFolder(folderPath);
         }
 
-        // 2. Create File if it doesn't exist
+        // 2. Create File if missing
         if (!file) {
             try {
-                // You could insert a template here
-                file = await this.app.vault.create(filePath, `# Daily Note: ${fileName}\n\n`);
-                new Notice(`Created new Night Owl note: ${fileName}`);
+                // CHANGED: Create an empty file with no placeholder content.
+                // This allows other plugins (like Templater) to listen for the 'create' event
+                // and apply templates automatically if the user has configured them.
+                file = await this.app.vault.create(filePath, ''); 
+                new Notice(`Created: ${fileName}`);
             } catch (error) {
-                new Notice("Error creating daily note. Check console.");
                 console.error(error);
+                new Notice("Error creating note.");
                 return;
             }
         }
 
-        // 3. Open the file
+        // 3. Open File
         if (file instanceof TFile) {
             const leaf = this.app.workspace.getLeaf(false);
             await leaf.openFile(file);
@@ -119,6 +156,7 @@ export default class NightOwlPlugin extends Plugin {
     }
 }
 
+// --- Settings Tab UI ---
 class NightOwlSettingTab extends PluginSettingTab {
     plugin: NightOwlPlugin;
 
@@ -130,12 +168,11 @@ class NightOwlSettingTab extends PluginSettingTab {
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
-
         containerEl.createEl('h2', { text: 'Night Owl Settings' });
 
         new Setting(containerEl)
             .setName('Rollover Hour')
-            .setDesc('The hour (0-23) when the new day actually starts. Default is 4 (4 AM).')
+            .setDesc('The hour (0-23) when the new day starts. (e.g. 4 = 4 AM)')
             .addText(text => text
                 .setPlaceholder('4')
                 .setValue(String(this.plugin.settings.rolloverHour))
@@ -149,7 +186,7 @@ class NightOwlSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('Date Format')
-            .setDesc('Moment.js date format syntax.')
+            .setDesc('Moment.js format (must match your file names).')
             .addText(text => text
                 .setPlaceholder('YYYY-MM-DD')
                 .setValue(this.plugin.settings.dateFormat)
@@ -160,7 +197,7 @@ class NightOwlSettingTab extends PluginSettingTab {
         
         new Setting(containerEl)
             .setName('Folder')
-            .setDesc('Location to save daily notes.')
+            .setDesc('Folder where daily notes are stored.')
             .addText(text => text
                 .setPlaceholder('Daily Notes')
                 .setValue(this.plugin.settings.folder)
