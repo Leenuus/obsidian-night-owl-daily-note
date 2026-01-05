@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, normalizePath, moment } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, TFolder, Notice, normalizePath, moment } from 'obsidian';
 
 // Interface for Settings
 interface NightOwlSettings {
@@ -19,8 +19,8 @@ export default class NightOwlPlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
-        // --- GROUP 1: Time-Based Commands (Night Owl Logic) ---
-        // These depend on the current system clock + rollover setting.
+        // --- GROUP 1: Time-Based Commands (Read/Write) ---
+        // Creates the note if it doesn't exist.
 
         this.addCommand({
             id: 'night-owl-jump-today',
@@ -40,19 +40,19 @@ export default class NightOwlPlugin extends Plugin {
             callback: () => this.jumpToTimeBasedDate(1)
         });
 
-        // --- GROUP 2: File-Based Commands (Walking) ---
-        // These depend on the date of the CURRENTLY OPEN file.
+        // --- GROUP 2: History Navigation Commands (Read-Only) ---
+        // Only opens existing notes. Skips gaps.
 
         this.addCommand({
             id: 'night-owl-nav-prev',
-            name: 'Navigate: Previous Daily Note',
-            callback: () => this.navigateRelativeDate(-1)
+            name: 'Navigate: Previous Existing Daily Note',
+            callback: () => this.navigateHistory(-1)
         });
 
         this.addCommand({
             id: 'night-owl-nav-next',
-            name: 'Navigate: Next Daily Note',
-            callback: () => this.navigateRelativeDate(1)
+            name: 'Navigate: Next Existing Daily Note',
+            callback: () => this.navigateHistory(1)
         });
 
         // Ribbon Icon (Defaults to Today)
@@ -64,54 +64,87 @@ export default class NightOwlPlugin extends Plugin {
     }
 
     /**
-     * LOGIC 1: Absolute Time Calculation
-     * Returns a moment object representing "Today" adjusted for the rollover hour.
+     * LOGIC 1: Absolute Time Calculation (Read/Write)
      */
     getNightOwlToday(): moment.Moment {
         const now = moment();
-        // If it's 3 AM and rollover is 4 AM, we are still in "yesterday"
         if (now.hour() < this.settings.rolloverHour) {
             now.subtract(1, 'day');
         }
         return now;
     }
 
-    /**
-     * Handler for Jump commands (Today/Yesterday/Tomorrow)
-     */
     async jumpToTimeBasedDate(dayOffset: number) {
         const targetDate = this.getNightOwlToday().add(dayOffset, 'days');
         await this.openOrCreateNote(targetDate);
     }
 
     /**
-     * LOGIC 2: Relative File Calculation
-     * Reads the current view, parses the filename, and moves back/forward.
+     * LOGIC 2: History Navigation (Read-Only)
+     * Scans the folder, sorts files by date, finds current, and moves index.
      */
-    async navigateRelativeDate(dayOffset: number) {
+	  async navigateHistory(direction: number) {
         const activeFile = this.app.workspace.getActiveFile();
-
         if (!activeFile) {
             new Notice("No file is currently open.");
             return;
         }
 
-        // Try to parse the filename using the settings format
-        // The 'true' flag ensures strict parsing (rejects files that don't match the format)
+        // 1. Verify current file is a valid daily note
         const currentFileDate = moment(activeFile.basename, this.settings.dateFormat, true);
-
         if (!currentFileDate.isValid()) {
-            new Notice(`Current file "${activeFile.basename}" is not a valid daily note.`);
+            new Notice("Current file is not a valid daily note.");
             return;
         }
 
-        // Calculate target
-        const targetDate = currentFileDate.add(dayOffset, 'days');
-        await this.openOrCreateNote(targetDate);
+        // 2. Get the daily notes folder
+        const folderPath = normalizePath(this.settings.folder);
+        const folder = this.app.vault.getAbstractFileByPath(folderPath);
+
+        if (!folder || !(folder instanceof TFolder)) {
+            new Notice(`Folder "${folderPath}" not found.`);
+            return;
+        }
+
+        // 3. Filter children: Must be Markdown & Parseable as Date
+        // We explicitly type the map result to help TypeScript (optional but good practice)
+        const sortedNotes = folder.children
+            .filter((f): f is TFile => f instanceof TFile && f.extension === 'md')
+            .map(f => ({
+                file: f,
+                date: moment(f.basename, this.settings.dateFormat, true)
+            }))
+            .filter(item => item.date.isValid())
+            .sort((a, b) => a.date.valueOf() - b.date.valueOf()); // Sort Chronologically
+
+        // 4. Find where we are currently
+        const currentIndex = sortedNotes.findIndex(item => item.file.path === activeFile.path);
+
+        if (currentIndex === -1) {
+            new Notice("Current note is not in the configured Daily Notes folder.");
+            return;
+        }
+
+        // 5. Calculate Target Index
+        const targetIndex = currentIndex + direction;
+
+        // 6. Check Bounds and Retrieve Item
+        // We check the item directly. If 'targetItem' exists, we are good.
+        const targetItem = sortedNotes[targetIndex];
+
+        if (targetItem) {
+            const targetFile = targetItem.file; // TypeScript knows this is safe now
+            const leaf = this.app.workspace.getLeaf(false);
+            await leaf.openFile(targetFile);
+        } else {
+            // If targetItem is undefined, we hit the edge of history
+            const msg = direction < 0 ? "reached the beginning of history." : "reached the end of history.";
+            new Notice(`You have ${msg}`);
+        }
     }
 
     /**
-     * Shared Logic: Finds, Creates, and Opens a note for a specific Moment date.
+     * Helper: Opens or Creates a note for a specific Moment date.
      */
     async openOrCreateNote(targetDate: moment.Moment) {
         const fileName = targetDate.format(this.settings.dateFormat);
@@ -120,17 +153,14 @@ export default class NightOwlPlugin extends Plugin {
 
         let file = this.app.vault.getAbstractFileByPath(filePath);
 
-        // 1. Create Folder if missing
+        // Create Folder if missing
         if (!(await this.app.vault.adapter.exists(folderPath))) {
             await this.app.vault.createFolder(folderPath);
         }
 
-        // 2. Create File if missing
+        // Create File if missing (Empty content for templater support)
         if (!file) {
             try {
-                // CHANGED: Create an empty file with no placeholder content.
-                // This allows other plugins (like Templater) to listen for the 'create' event
-                // and apply templates automatically if the user has configured them.
                 file = await this.app.vault.create(filePath, ''); 
                 new Notice(`Created: ${fileName}`);
             } catch (error) {
@@ -140,7 +170,7 @@ export default class NightOwlPlugin extends Plugin {
             }
         }
 
-        // 3. Open File
+        // Open File
         if (file instanceof TFile) {
             const leaf = this.app.workspace.getLeaf(false);
             await leaf.openFile(file);
