@@ -9,7 +9,7 @@ interface NightOwlSettings {
 
 const DEFAULT_SETTINGS: NightOwlSettings = {
     rolloverHour: 4,
-    folder: 'Daily Notes',
+    folder: '10-LifeLongTopics-生活/13-日记-Journal',
     dateFormat: 'YYYY-MM-DD'
 }
 
