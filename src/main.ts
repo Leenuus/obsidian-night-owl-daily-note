@@ -56,7 +56,7 @@ export default class NightOwlPlugin extends Plugin {
         });
 
         // Ribbon Icon (Defaults to Today)
-        this.addRibbonIcon('moon', 'Open Today (Night Owl)', () => {
+        this.addRibbonIcon('calendar-days', 'Open Today (Night Owl)', () => {
             this.jumpToTimeBasedDate(0);
         });
 
