@@ -4,8 +4,7 @@
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
 	"description": "Work with daily note like a night owl",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"author": "Leenuus",
+	"authorUrl": "https://github.com/Leenuus",
 	"isDesktopOnly": false
 }

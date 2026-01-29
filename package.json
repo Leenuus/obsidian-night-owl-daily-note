@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "obsidian-night-owl-daily-note",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "A Obsidian plugin that allows you to work with daily note like a night owl",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {
