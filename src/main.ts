@@ -46,13 +46,13 @@ export default class NightOwlPlugin extends Plugin {
         this.addCommand({
             id: 'night-owl-nav-prev',
             name: 'Navigate: Previous Existing Daily Note',
-            callback: () => this.navigateHistory(-1)
+            checkCallback: (checking) => this.navigateHistory(-1, checking)
         });
 
         this.addCommand({
             id: 'night-owl-nav-next',
             name: 'Navigate: Next Existing Daily Note',
-            callback: () => this.navigateHistory(1)
+            checkCallback: (checking) => this.navigateHistory(1, checking)
         });
 
         // Ribbon Icon (Defaults to Today)
@@ -83,18 +83,33 @@ export default class NightOwlPlugin extends Plugin {
      * LOGIC 2: History Navigation (Read-Only)
      * Scans the folder, sorts files by date, finds current, and moves index.
      */
-	  async navigateHistory(direction: number) {
+    async navigateHistory(direction: number, checking = false) {
+        const result = this.getHistoryTarget(direction);
+        if (checking) {
+            return Boolean(result.targetFile);
+        }
+
+        if (!result.targetFile) {
+            if (result.reason) {
+                new Notice(result.reason);
+            }
+            return;
+        }
+
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.openFile(result.targetFile);
+    }
+
+    private getHistoryTarget(direction: number): { targetFile: TFile | null; reason: string | null } {
         const activeFile = this.app.workspace.getActiveFile();
         if (!activeFile) {
-            new Notice("No file is currently open.");
-            return;
+            return { targetFile: null, reason: "No file is currently open." };
         }
 
         // 1. Verify current file is a valid daily note
         const currentFileDate = moment(activeFile.basename, this.settings.dateFormat, true);
         if (!currentFileDate.isValid()) {
-            new Notice("Current file is not a valid daily note.");
-            return;
+            return { targetFile: null, reason: "Current file is not a valid daily note." };
         }
 
         // 2. Get the daily notes folder
@@ -102,8 +117,7 @@ export default class NightOwlPlugin extends Plugin {
         const folder = this.app.vault.getAbstractFileByPath(folderPath);
 
         if (!folder || !(folder instanceof TFolder)) {
-            new Notice(`Folder "${folderPath}" not found.`);
-            return;
+            return { targetFile: null, reason: `Folder "${folderPath}" not found.` };
         }
 
         // 3. Filter children: Must be Markdown & Parseable as Date
@@ -121,8 +135,7 @@ export default class NightOwlPlugin extends Plugin {
         const currentIndex = sortedNotes.findIndex(item => item.file.path === activeFile.path);
 
         if (currentIndex === -1) {
-            new Notice("Current note is not in the configured Daily Notes folder.");
-            return;
+            return { targetFile: null, reason: "Current note is not in the configured Daily Notes folder." };
         }
 
         // 5. Calculate Target Index
@@ -132,15 +145,12 @@ export default class NightOwlPlugin extends Plugin {
         // We check the item directly. If 'targetItem' exists, we are good.
         const targetItem = sortedNotes[targetIndex];
 
-        if (targetItem) {
-            const targetFile = targetItem.file; // TypeScript knows this is safe now
-            const leaf = this.app.workspace.getLeaf(false);
-            await leaf.openFile(targetFile);
-        } else {
-            // If targetItem is undefined, we hit the edge of history
+        if (!targetItem) {
             const msg = direction < 0 ? "reached the beginning of history." : "reached the end of history.";
-            new Notice(`You have ${msg}`);
+            return { targetFile: null, reason: `You have ${msg}` };
         }
+
+        return { targetFile: targetItem.file, reason: null };
     }
 
     /**
